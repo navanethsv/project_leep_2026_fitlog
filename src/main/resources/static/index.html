@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Workout Log</title>
+    <style>
+        :root {
+            --bg: #edf1f0; --surface: #ffffff; --ink: #16232b; --muted: #5b6b73;
+            --line: #d3dcda; --accent: #0f6b5c; --accent-ink: #ffffff; --danger: #b3261e;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root { --bg: #0f1a1e; --surface: #17262c; --ink: #e6efed; --muted: #93a6ac;
+                --line: #2a3d44; --accent: #3fc1a8; --accent-ink: #0f1a1e; --danger: #ff8a80; }
+        }
+        * { box-sizing: border-box; }
+        body { margin: 0; background: var(--bg); color: var(--ink);
+            font-family: "Segoe UI", system-ui, -apple-system, sans-serif; line-height: 1.5; }
+        header { padding: 28px 20px 8px; max-width: 1040px; margin: 0 auto; }
+        h1 { margin: 0; font-size: 1.9rem; letter-spacing: -0.02em; }
+        header p { margin: 4px 0 0; color: var(--muted); }
+        main { max-width: 1040px; margin: 0 auto; padding: 16px 20px 40px;
+            display: grid; grid-template-columns: 320px 1fr; gap: 20px; align-items: start; }
+        @media (max-width: 820px) { main { grid-template-columns: 1fr; } }
+        section { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 18px; }
+        h2 { margin: 0 0 12px; font-size: 1.05rem; }
+        label { display: block; font-size: .85rem; color: var(--muted); margin: 10px 0 4px; }
+        input { width: 100%; padding: 9px 10px; border: 1px solid var(--line); border-radius: 6px;
+            background: var(--bg); color: var(--ink); font: inherit; }
+        input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+        .row { display: flex; gap: 8px; margin-top: 16px; }
+        button { padding: 9px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface);
+            color: var(--ink); font: inherit; cursor: pointer; }
+        button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+        button.danger { color: var(--danger); }
+        button.small { padding: 4px 10px; font-size: .85rem; }
+        #message { margin-bottom: 12px; padding: 10px 12px; border-radius: 6px; display: none; font-size: .92rem; }
+        #message.ok { display: block; background: rgba(15,107,92,.12); color: var(--accent); }
+        #message.err { display: block; background: rgba(179,38,30,.12); color: var(--danger); }
+        .toolbar { display: flex; gap: 8px; margin-bottom: 12px; }
+        .toolbar input { max-width: 150px; }
+        .table-wrap { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; font-size: .92rem; }
+        th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+        th { color: var(--muted); font-weight: 600; }
+        td.actions { display: flex; gap: 6px; }
+        .empty { padding: 24px 0; color: var(--muted); }
+    </style>
+</head>
+<body>
+<header>
+    <h1>Workout Log</h1>
+    <p>Add, view, edit and delete your workouts.</p>
+</header>
+
+<main>
+    <section>
+        <h2 id="formTitle">Add a workout</h2>
+        <div id="message" role="status"></div>
+        <input type="hidden" id="workoutId">
+
+        <label for="type">Workout type</label>
+        <input id="type" placeholder="Running">
+
+        <label for="duration">Duration (minutes)</label>
+        <input id="duration" type="number" min="0" placeholder="30">
+
+        <label for="calories">Calories burnt</label>
+        <input id="calories" type="number" placeholder="300">
+
+        <label for="date">Date</label>
+        <input id="date" type="date">
+
+        <label for="userId">User ID</label>
+        <input id="userId" type="number" min="1" placeholder="1">
+
+        <div class="row">
+            <button class="primary" id="saveBtn">Add workout</button>
+            <button id="cancelBtn" style="display:none">Cancel edit</button>
+        </div>
+    </section>
+
+    <section>
+        <h2>All workouts</h2>
+        <div class="toolbar">
+            <input id="findId" type="number" min="1" placeholder="Workout ID">
+            <button id="findBtn">Find by ID</button>
+            <button id="allBtn">Show all</button>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr><th>ID</th><th>Type</th><th>Minutes</th><th>Calories</th><th>Date</th><th>User</th><th></th></tr>
+                </thead>
+                <tbody id="rows"></tbody>
+            </table>
+        </div>
+        <div id="empty" class="empty" style="display:none">No workouts yet. Add your first one using the form.</div>
+    </section>
+</main>
+
+<script>
+    // If this file is opened from disk, call the server directly; if served by Spring Boot, use the same origin.
+    const API = location.protocol === 'file:' ? 'http://localhost:8080' : '';
+    const $ = id => document.getElementById(id);
+    let workouts = [];
+
+    function show(text, ok) {
+        const m = $('message');
+        m.textContent = text;
+        m.className = ok ? 'ok' : 'err';
+    }
+
+    function esc(v) {
+        return String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    // The backend returns either JSON or a plain text message starting with "Error".
+    async function call(path, method, body) {
+        const res = await fetch(API + path, {
+            method,
+            headers: body ? { 'Content-Type': 'application/json' } : {},
+            body: body ? JSON.stringify(body) : undefined
+        });
+        const text = await res.text();
+        if (!res.ok) throw new Error('Server error ' + res.status);
+        if (text.startsWith('Error')) throw new Error(text.replace(/^Error:\s*/, ''));
+        try { return JSON.parse(text); } catch { return text; }
+    }
+
+    function render(list) {
+        $('rows').innerHTML = list.map(w => `
+      <tr>
+        <td>${esc(w.id)}</td><td>${esc(w.type)}</td><td>${esc(w.durationMinutes)}</td>
+        <td>${esc(w.caloriesBurnt)}</td><td>${esc(w.date)}</td><td>${esc(w.userId)}</td>
+        <td class="actions">
+          <button class="small" onclick="startEdit(${Number(w.id)})">Edit</button>
+          <button class="small danger" onclick="removeWorkout(${Number(w.id)})">Delete</button>
+        </td>
+      </tr>`).join('');
+        $('empty').style.display = list.length ? 'none' : 'block';
+    }
+
+    async function loadAll() {
+        try {
+            workouts = await call('/workouts', 'GET');
+            render(workouts);
+        } catch (e) { show(e.message + '. Check that the server is running.', false); }
+    }
+
+    function readForm() {
+        return {
+            type: $('type').value.trim(),
+            durationMinutes: Number($('duration').value),
+            caloriesBurnt: Number($('calories').value),
+            date: $('date').value || null,
+            userId: Number($('userId').value) || null
+        };
+    }
+
+    function resetForm() {
+        ['workoutId','type','duration','calories','date','userId'].forEach(id => $(id).value = '');
+        $('formTitle').textContent = 'Add a workout';
+        $('saveBtn').textContent = 'Add workout';
+        $('cancelBtn').style.display = 'none';
+    }
+
+    async function save() {
+        const data = readForm();
+        if (!data.type) return show('Enter a workout type.', false);
+        if (data.caloriesBurnt < 0) return show('Calories burnt cannot be negative.', false);
+        const id = $('workoutId').value;
+        try {
+            if (id) { await call('/workouts/update/' + id, 'POST', data); show('Workout updated.', true); }
+            else    { await call('/workouts/add', 'POST', data);          show('Workout added.', true); }
+            resetForm();
+            loadAll();
+        } catch (e) { show(e.message, false); }
+    }
+
+    function startEdit(id) {
+        const w = workouts.find(x => x.id === id);
+        if (!w) return;
+        $('workoutId').value = w.id;
+        $('type').value = w.type ?? '';
+        $('duration').value = w.durationMinutes ?? '';
+        $('calories').value = w.caloriesBurnt ?? '';
+        $('date').value = w.date ?? '';
+        $('userId').value = w.userId ?? '';
+        $('formTitle').textContent = 'Edit workout ' + id;
+        $('saveBtn').textContent = 'Save changes';
+        $('cancelBtn').style.display = 'inline-block';
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    async function removeWorkout(id) {
+        if (!confirm('Delete workout ' + id + '?')) return;
+        try {
+            const msg = await call('/workouts/delete/' + id, 'POST');
+            show(msg, true);
+            loadAll();
+        } catch (e) { show(e.message, false); }
+    }
+
+    async function findOne() {
+        const id = $('findId').value;
+        if (!id) return show('Enter a workout ID to search.', false);
+        try {
+            const w = await call('/workouts/' + id, 'GET');
+            render([w]);
+            show('Showing workout ' + id + '.', true);
+        } catch (e) { show(e.message, false); }
+    }
+
+    $('saveBtn').addEventListener('click', save);
+    $('cancelBtn').addEventListener('click', resetForm);
+    $('findBtn').addEventListener('click', findOne);
+    $('allBtn').addEventListener('click', () => { $('findId').value = ''; loadAll(); });
+    loadAll();
+</script>
+</body>
+</html>
